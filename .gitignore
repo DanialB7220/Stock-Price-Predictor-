@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+.DS_Store
+models/*.pkl
+models/*.rds
+outputs/*.csv
+outputs/*.json
+venv/
+.venv/
