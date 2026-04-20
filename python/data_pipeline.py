@@ -1,43 +1,73 @@
-import yfinance as yf
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
-# Pull SPY daily data
-df = yf.download("SPY", start="2018-01-01", end="2025-12-31")
-df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
 
-# --- Feature Engineering ---
-df["return_1d"] = df["Close"].pct_change(1)
-df["return_5d"] = df["Close"].pct_change(5)
-df["return_20d"] = df["Close"].pct_change(20)
+ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = ROOT / "data" / "stock data.csv"
+OUTPUTS_DIR = ROOT / "outputs"
+DEFAULT_TICKER = "AAL"
 
-df["ma_10"] = df["Close"].rolling(10).mean()
-df["ma_20"] = df["Close"].rolling(20).mean()
-df["ma_ratio"] = df["ma_10"] / df["ma_20"]  # normalized, not raw
 
-df["volatility_10d"] = df["return_1d"].rolling(10).std()
+def build_features(df: pd.DataFrame) -> pd.DataFrame:
+    featured = df.sort_values("Date").copy()
+    featured["return_1d"] = featured["Close"].pct_change(1)
+    featured["return_5d"] = featured["Close"].pct_change(5)
+    featured["ma_10"] = featured["Close"].rolling(10).mean()
+    featured["ma_20"] = featured["Close"].rolling(20).mean()
+    featured["volatility_10"] = featured["return_1d"].rolling(10).std()
+    featured["volume_change_1d"] = featured["Volume"].pct_change(1)
+    featured["future_return_1d"] = featured["Close"].shift(-1) / featured["Close"] - 1
+    featured["target_direction"] = (featured["future_return_1d"] > 0).astype(int)
 
-# RSI-14
-delta = df["Close"].diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = -delta.clip(upper=0).rolling(14).mean()
-df["rsi_14"] = 100 - (100 / (1 + gain / loss))
+    featured = featured.dropna(
+        subset=[
+            "return_1d",
+            "return_5d",
+            "ma_10",
+            "ma_20",
+            "volatility_10",
+            "volume_change_1d",
+            "future_return_1d",
+        ]
+    ).copy()
+    return featured
 
-# Volume z-score (20-day)
-df["volume_zscore"] = (
-    (df["Volume"] - df["Volume"].rolling(20).mean()) 
-    / df["Volume"].rolling(20).std()
-)
 
-df["day_of_week"] = df.index.dayofweek
+def main() -> None:
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"Missing input data file: {DATA_PATH}")
 
-# --- Label: ±1% threshold over 5 days ---
-future_return = (df["Close"].shift(-5) - df["Close"]) / df["Close"]
-df["target"] = np.where(future_return > 0.01, 1,
-               np.where(future_return < -0.01, -1,
-               np.nan))
+    raw = pd.read_csv(DATA_PATH)
+    raw.columns = [c.strip() for c in raw.columns]
+    raw = raw.rename(
+        columns={
+            "date": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        }
+    )
+    raw["Date"] = pd.to_datetime(raw["Date"], format="%d/%m/%Y", errors="coerce")
+    raw = raw.dropna(subset=["Date", "Close", "Volume"])
 
-df = df.dropna()  # drops NaN from rolling windows AND flat zone
+    if "Name" not in raw.columns:
+        raise ValueError("Input file must include a 'Name' ticker column.")
 
-print(df["target"].value_counts())
-print(df.shape)
+    ticker = DEFAULT_TICKER
+    if ticker not in set(raw["Name"]):
+        ticker = str(raw["Name"].mode().iloc[0])
+
+    ticker_df = raw.loc[raw["Name"] == ticker, ["Date", "Open", "High", "Low", "Close", "Volume"]]
+    featured = build_features(ticker_df)
+    featured.to_csv(OUTPUTS_DIR / "featured_data.csv", index=False)
+
+    print(f"Saved {len(featured)} rows to {OUTPUTS_DIR / 'featured_data.csv'} for ticker {ticker}")
+
+
+if __name__ == "__main__":
+    main()

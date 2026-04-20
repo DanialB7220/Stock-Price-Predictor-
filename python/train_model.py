@@ -8,6 +8,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report
 
+from data_pipeline import main as run_data_pipeline
+
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS_DIR = ROOT / "outputs"
@@ -36,7 +38,7 @@ def main() -> None:
 
     featured_path = OUTPUTS_DIR / "featured_data.csv"
     if not featured_path.exists():
-        raise FileNotFoundError("Run python/data_pipeline.py first.")
+        run_data_pipeline()
 
     df = pd.read_csv(featured_path)
     train, test = train_test_split_time(df)

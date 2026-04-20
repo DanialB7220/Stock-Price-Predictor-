@@ -1,7 +1,7 @@
 # Stock-Price-Predictor-
 
 End-to-end stock trend prediction project in both Python and R, including:
-- data pipeline (local `archive/` CSVs first, `yfinance` fallback + optional Alpha Vantage indicator),
+- data pipeline based on local dataset `data/stock data.csv`,
 - baseline and advanced ML models,
 - dashboards (Dash and Shiny),
 - Flask API with `.env` configuration.
@@ -22,6 +22,10 @@ install.packages(c("readr", "dplyr", "lubridate", "randomForest", "shiny", "plot
 ```
 
 ## 2) Run pipeline + models
+
+Dataset requirement:
+- Place your source file at `data/stock data.csv`
+- Required columns: `date, open, high, low, close, volume, Name`
 
 ### Python data + model
 
