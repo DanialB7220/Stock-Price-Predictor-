@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_score, recall_score
 
 from data_pipeline import main as run_data_pipeline
 
@@ -41,6 +41,10 @@ def main() -> None:
         run_data_pipeline()
 
     df = pd.read_csv(featured_path)
+    missing_cols = [col for col in FEATURES + ["target_direction"] if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in featured data: {missing_cols}")
+    df = df.dropna(subset=FEATURES + ["target_direction"]).copy()
     train, test = train_test_split_time(df)
 
     X_train = train[FEATURES]
@@ -51,12 +55,19 @@ def main() -> None:
     baseline_pred = np.zeros(len(y_test), dtype=int)
     baseline_acc = accuracy_score(y_test, baseline_pred)
 
-    logreg = LogisticRegression(max_iter=200)
+    logreg = LogisticRegression(max_iter=500, class_weight="balanced", solver="liblinear", random_state=42)
     logreg.fit(X_train, y_train)
     logreg_pred = logreg.predict(X_test)
     logreg_acc = accuracy_score(y_test, logreg_pred)
 
-    rf = RandomForestClassifier(n_estimators=300, random_state=42)
+    rf = RandomForestClassifier(
+        n_estimators=500,
+        random_state=42,
+        n_jobs=-1,
+        min_samples_leaf=3,
+        max_depth=12,
+        class_weight="balanced_subsample",
+    )
     rf.fit(X_train, y_train)
     rf_pred = rf.predict(X_test)
     rf_acc = accuracy_score(y_test, rf_pred)
@@ -67,11 +78,39 @@ def main() -> None:
     joblib.dump(best_model, MODELS_DIR / "best_model.pkl")
     joblib.dump(FEATURES, MODELS_DIR / "feature_columns.pkl")
 
+    baseline_precision = precision_score(y_test, baseline_pred, zero_division=0)
+    baseline_recall = recall_score(y_test, baseline_pred, zero_division=0)
+    baseline_f1 = f1_score(y_test, baseline_pred, zero_division=0)
+    logreg_precision = precision_score(y_test, logreg_pred, zero_division=0)
+    logreg_recall = recall_score(y_test, logreg_pred, zero_division=0)
+    logreg_f1 = f1_score(y_test, logreg_pred, zero_division=0)
+    rf_precision = precision_score(y_test, rf_pred, zero_division=0)
+    rf_recall = recall_score(y_test, rf_pred, zero_division=0)
+    rf_f1 = f1_score(y_test, rf_pred, zero_division=0)
+
     eval_table = pd.DataFrame(
         [
-            {"model": "baseline_always_down", "accuracy": baseline_acc},
-            {"model": "logistic_regression", "accuracy": logreg_acc},
-            {"model": "random_forest", "accuracy": rf_acc},
+            {
+                "model": "baseline_always_down",
+                "accuracy": baseline_acc,
+                "precision_up_class": baseline_precision,
+                "recall_up_class": baseline_recall,
+                "f1_up_class": baseline_f1,
+            },
+            {
+                "model": "logistic_regression",
+                "accuracy": logreg_acc,
+                "precision_up_class": logreg_precision,
+                "recall_up_class": logreg_recall,
+                "f1_up_class": logreg_f1,
+            },
+            {
+                "model": "random_forest",
+                "accuracy": rf_acc,
+                "precision_up_class": rf_precision,
+                "recall_up_class": rf_recall,
+                "f1_up_class": rf_f1,
+            },
         ]
     )
     eval_table.to_csv(OUTPUTS_DIR / "model_scores_python.csv", index=False)
