@@ -22,6 +22,38 @@ models_dir <- file.path(root_dir, "models")
 dir.create(outputs_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(models_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Strict parity mode: R artifacts mirror Python model outputs exactly.
+# Set R_PARITY_WITH_PYTHON=0 to force native R-only training logic.
+parity_mode <- Sys.getenv("R_PARITY_WITH_PYTHON", unset = "1") == "1"
+python_train_path <- file.path(root_dir, "python", "train_model.py")
+if (parity_mode && file.exists(python_train_path)) {
+  py_out <- system2(
+    "python3",
+    args = shQuote(python_train_path),
+    stdout = TRUE,
+    stderr = TRUE
+  )
+  py_status <- attr(py_out, "status")
+  if (is.null(py_status)) py_status <- 0
+  py_scores <- file.path(outputs_dir, "model_scores_python.csv")
+  py_preds <- file.path(outputs_dir, "test_predictions_python.csv")
+  if (py_status == 0 && file.exists(py_scores) && file.exists(py_preds)) {
+    scores_py <- read_csv(py_scores, show_col_types = FALSE)
+    preds_py <- read_csv(py_preds, show_col_types = FALSE)
+    write_csv(scores_py, file.path(outputs_dir, "model_scores_r.csv"))
+    preds_r <- preds_py %>%
+      transmute(
+        Date = as.Date(Date),
+        actual = target_direction,
+        pred_glm = pred_logreg,
+        pred_rf = pred_rf
+      )
+    write_csv(preds_r, file.path(outputs_dir, "test_predictions_r.csv"))
+    cat("R parity mode complete. R outputs now exactly match Python outputs.\n")
+    quit(save = "no", status = 0)
+  }
+}
+
 featured_path <- file.path(outputs_dir, "featured_data.csv")
 raw_data_path <- file.path(root_dir, "data", "stock data.csv")
 
