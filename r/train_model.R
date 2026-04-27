@@ -14,7 +14,7 @@ if (length(file_arg) > 0) {
   script_dir <- getwd()
 }
 root_dir <- normalizePath(file.path(script_dir, ".."), mustWork = FALSE)
-if (!dir.exists(file.path(root_dir, "archive"))) {
+if (!dir.exists(file.path(root_dir, "data")) && !dir.exists(file.path(root_dir, "outputs"))) {
   root_dir <- script_dir
 }
 outputs_dir <- file.path(root_dir, "outputs")
@@ -84,6 +84,18 @@ if (length(missing_features) > 0) {
   stop(sprintf("Missing required feature columns: %s", paste(missing_features, collapse = ", ")))
 }
 
+df <- df %>%
+  filter(
+    if_all(all_of(feature_cols), ~ is.finite(.x)),
+    !is.na(target_direction)
+  )
+
+max_rows <- 120000
+if (nrow(df) > max_rows) {
+  df <- dplyr::slice_tail(df, n = max_rows)
+  message(sprintf("Using most recent %d rows for memory-safe training.", max_rows))
+}
+
 split_idx <- floor(nrow(df) * 0.8)
 train_df <- df[1:split_idx, ]
 test_df <- df[(split_idx + 1):nrow(df), ]
@@ -98,7 +110,7 @@ glm_prob <- predict(glm_fit, newdata = test_df, type = "response")
 glm_pred <- factor(ifelse(glm_prob > 0.5, 1, 0), levels = levels(test_df$target_direction))
 glm_acc <- mean(glm_pred == test_df$target_direction)
 
-rf_fit <- randomForest(glm_formula, data = train_df, ntree = 400, mtry = 3, importance = TRUE)
+rf_fit <- randomForest(glm_formula, data = train_df, ntree = 200, mtry = 2, importance = TRUE)
 rf_pred <- predict(rf_fit, newdata = test_df)
 rf_acc <- mean(rf_pred == test_df$target_direction)
 
