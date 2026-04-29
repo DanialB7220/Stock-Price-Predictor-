@@ -46,7 +46,8 @@ if (parity_mode && file.exists(python_train_path)) {
         Date = as.Date(Date),
         actual = target_direction,
         pred_glm = pred_logreg,
-        pred_rf = pred_rf
+        pred_rf = pred_rf,
+        pred_linreg = if ("pred_linreg" %in% names(preds_py)) pred_linreg else 0L
       )
     write_csv(preds_r, file.path(outputs_dir, "test_predictions_r.csv"))
     cat("R parity mode complete. R outputs now exactly match Python outputs.\n")
@@ -146,6 +147,12 @@ rf_fit <- randomForest(glm_formula, data = train_df, ntree = 200, mtry = 2, impo
 rf_pred <- predict(rf_fit, newdata = test_df)
 rf_acc <- mean(rf_pred == test_df$target_direction)
 
+linreg_formula <- as.formula(paste("target_next_close ~", paste(feature_cols, collapse = " + ")))
+linreg_fit <- lm(linreg_formula, data = train_df)
+linreg_next_close <- predict(linreg_fit, newdata = test_df)
+linreg_pred <- factor(ifelse(linreg_next_close > test_df$Close, 1, 0), levels = levels(test_df$target_direction))
+linreg_acc <- mean(linreg_pred == test_df$target_direction)
+
 f1_score <- function(actual, pred) {
   actual_i <- as.integer(as.character(actual))
   pred_i <- as.integer(as.character(pred))
@@ -158,6 +165,7 @@ f1_score <- function(actual, pred) {
 
 glm_f1 <- f1_score(test_df$target_direction, glm_pred)
 rf_f1 <- f1_score(test_df$target_direction, rf_pred)
+linreg_f1 <- f1_score(test_df$target_direction, linreg_pred)
 
 best_model <- if (rf_acc >= glm_acc) "random_forest" else "logistic_regression"
 if (best_model == "random_forest") {
@@ -167,14 +175,14 @@ if (best_model == "random_forest") {
 }
 
 scores <- tibble(
-  model = c("baseline_always_down", "logistic_regression", "random_forest"),
-  accuracy = c(baseline_acc, glm_acc, rf_acc),
-  f1_up_class = c(baseline_f1, glm_f1, rf_f1)
+  model = c("baseline_always_down", "logistic_regression", "random_forest", "linear_regression"),
+  accuracy = c(baseline_acc, glm_acc, rf_acc, linreg_acc),
+  f1_up_class = c(baseline_f1, glm_f1, rf_f1, linreg_f1)
 )
 write_csv(scores, file.path(outputs_dir, "model_scores_r.csv"))
 
 pred_out <- test_df %>%
-  transmute(Date, actual = target_direction, pred_glm = glm_pred, pred_rf = rf_pred)
+  transmute(Date, actual = target_direction, pred_glm = glm_pred, pred_rf = rf_pred, pred_linreg = linreg_pred)
 write_csv(pred_out, file.path(outputs_dir, "test_predictions_r.csv"))
 
 importance_tbl <- tibble(

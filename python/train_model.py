@@ -5,7 +5,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_score, recall_score
 
 from data_pipeline import main as run_data_pipeline
@@ -44,6 +44,7 @@ def main() -> None:
     missing_cols = [col for col in FEATURES + ["target_direction"] if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns in featured data: {missing_cols}")
+    df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=FEATURES + ["target_direction"]).copy()
     train, test = train_test_split_time(df)
 
@@ -51,6 +52,8 @@ def main() -> None:
     y_train = train["target_direction"].astype(int)
     X_test = test[FEATURES]
     y_test = test["target_direction"].astype(int)
+    y_train_close = train["target_next_close"].astype(float) if "target_next_close" in train.columns else None
+    y_test_close = test["target_next_close"].astype(float) if "target_next_close" in test.columns else None
 
     baseline_pred = np.zeros(len(y_test), dtype=int)
     baseline_acc = accuracy_score(y_test, baseline_pred)
@@ -59,6 +62,15 @@ def main() -> None:
     logreg.fit(X_train, y_train)
     logreg_pred = logreg.predict(X_test)
     logreg_acc = accuracy_score(y_test, logreg_pred)
+
+    linreg_pred_direction = np.zeros(len(y_test), dtype=int)
+    linreg_acc = 0.0
+    if y_train_close is not None and y_test_close is not None and "Close" in test.columns:
+        linreg = LinearRegression()
+        linreg.fit(X_train, y_train_close)
+        linreg_next_close = linreg.predict(X_test)
+        linreg_pred_direction = (linreg_next_close > test["Close"].astype(float).to_numpy()).astype(int)
+        linreg_acc = accuracy_score(y_test, linreg_pred_direction)
 
     rf = RandomForestClassifier(
         n_estimators=500,
@@ -87,6 +99,9 @@ def main() -> None:
     rf_precision = precision_score(y_test, rf_pred, zero_division=0)
     rf_recall = recall_score(y_test, rf_pred, zero_division=0)
     rf_f1 = f1_score(y_test, rf_pred, zero_division=0)
+    linreg_precision = precision_score(y_test, linreg_pred_direction, zero_division=0)
+    linreg_recall = recall_score(y_test, linreg_pred_direction, zero_division=0)
+    linreg_f1 = f1_score(y_test, linreg_pred_direction, zero_division=0)
 
     eval_table = pd.DataFrame(
         [
@@ -111,6 +126,13 @@ def main() -> None:
                 "recall_up_class": rf_recall,
                 "f1_up_class": rf_f1,
             },
+            {
+                "model": "linear_regression",
+                "accuracy": linreg_acc,
+                "precision_up_class": linreg_precision,
+                "recall_up_class": linreg_recall,
+                "f1_up_class": linreg_f1,
+            },
         ]
     )
     eval_table.to_csv(OUTPUTS_DIR / "model_scores_python.csv", index=False)
@@ -118,6 +140,7 @@ def main() -> None:
     test_out = test.copy()
     test_out["pred_logreg"] = logreg_pred
     test_out["pred_rf"] = rf_pred
+    test_out["pred_linreg"] = linreg_pred_direction
     test_out.to_csv(OUTPUTS_DIR / "test_predictions_python.csv", index=False)
 
     summary = {
