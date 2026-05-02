@@ -4,9 +4,10 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_score, recall_score
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
 
 from data_pipeline import main as run_data_pipeline
 
@@ -24,12 +25,23 @@ FEATURES = [
     "volume_change_1d",
 ]
 
+N_CLUSTERS = 3
+RANDOM_STATE = 42
+
 
 def train_test_split_time(df: pd.DataFrame, split_ratio: float = 0.8):
     split_idx = int(len(df) * split_ratio)
     train = df.iloc[:split_idx].copy()
     test = df.iloc[split_idx:].copy()
     return train, test
+
+
+def _bullish_clusters_from_returns(
+    train: pd.DataFrame, cluster_col: str, return_col: str
+) -> set[int]:
+    """Pick clusters whose mean next-day return on the train split is positive."""
+    means = train.groupby(cluster_col, observed=True)[return_col].mean()
+    return set(int(k) for k in means.index if means[k] > 0)
 
 
 def main() -> None:
@@ -41,125 +53,105 @@ def main() -> None:
         run_data_pipeline()
 
     df = pd.read_csv(featured_path)
-    missing_cols = [col for col in FEATURES + ["target_direction"] if col not in df.columns]
+    if "future_return_1d" not in df.columns:
+        run_data_pipeline()
+        df = pd.read_csv(featured_path)
+    missing_cols = [col for col in FEATURES if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns in featured data: {missing_cols}")
     df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=FEATURES + ["target_direction"]).copy()
+    df = df.dropna(subset=FEATURES).copy()
+
+    if "future_return_1d" not in df.columns:
+        raise ValueError("featured_data must include future_return_1d for evaluation exports.")
+
     train, test = train_test_split_time(df)
 
-    X_train = train[FEATURES]
-    y_train = train["target_direction"].astype(int)
-    X_test = test[FEATURES]
-    y_test = test["target_direction"].astype(int)
-    y_train_close = train["target_next_close"].astype(float) if "target_next_close" in train.columns else None
-    y_test_close = test["target_next_close"].astype(float) if "target_next_close" in test.columns else None
+    X_train = train[FEATURES].to_numpy(dtype=float)
+    X_test = test[FEATURES].to_numpy(dtype=float)
 
-    baseline_pred = np.zeros(len(y_test), dtype=int)
-    baseline_acc = accuracy_score(y_test, baseline_pred)
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s = scaler.transform(X_test)
 
-    logreg = LogisticRegression(max_iter=500, class_weight="balanced", solver="liblinear", random_state=42)
-    logreg.fit(X_train, y_train)
-    logreg_pred = logreg.predict(X_test)
-    logreg_acc = accuracy_score(y_test, logreg_pred)
-
-    linreg_pred_direction = np.zeros(len(y_test), dtype=int)
-    linreg_acc = 0.0
-    if y_train_close is not None and y_test_close is not None and "Close" in test.columns:
-        linreg = LinearRegression()
-        linreg.fit(X_train, y_train_close)
-        linreg_next_close = linreg.predict(X_test)
-        linreg_pred_direction = (linreg_next_close > test["Close"].astype(float).to_numpy()).astype(int)
-        linreg_acc = accuracy_score(y_test, linreg_pred_direction)
-
-    rf = RandomForestClassifier(
-        n_estimators=500,
-        random_state=42,
-        n_jobs=-1,
-        min_samples_leaf=3,
-        max_depth=12,
-        class_weight="balanced_subsample",
+    kmeans = KMeans(
+        n_clusters=N_CLUSTERS,
+        random_state=RANDOM_STATE,
+        n_init="auto",
     )
-    rf.fit(X_train, y_train)
-    rf_pred = rf.predict(X_test)
-    rf_acc = accuracy_score(y_test, rf_pred)
+    kmeans.fit(X_train_s)
 
-    best_model = rf if rf_acc >= logreg_acc else logreg
-    best_name = "random_forest" if rf_acc >= logreg_acc else "logistic_regression"
+    train_clusters = kmeans.predict(X_train_s)
+    test_clusters = kmeans.predict(X_test_s)
 
-    joblib.dump(best_model, MODELS_DIR / "best_model.pkl")
+    train = train.copy()
+    test = test.copy()
+    train["cluster"] = train_clusters
+    test["cluster"] = test_clusters
+
+    silhouette_train = float(silhouette_score(X_train_s, train_clusters))
+    silhouette_test = float(silhouette_score(X_test_s, test_clusters))
+    inertia = float(kmeans.inertia_)
+
+    bullish = _bullish_clusters_from_returns(train, "cluster", "future_return_1d")
+    if not bullish:
+        means = train.groupby("cluster", observed=True)["future_return_1d"].mean()
+        best = int(means.idxmax())
+        bullish = {best}
+
+    train["signal_long"] = train["cluster"].isin(bullish).astype(int)
+    test["signal_long"] = test["cluster"].isin(bullish).astype(int)
+
+    pca = PCA(n_components=min(2, X_train_s.shape[1]), random_state=RANDOM_STATE)
+    pca.fit(X_train_s)
+
+    bundle = {
+        "scaler": scaler,
+        "kmeans": kmeans,
+        "feature_columns": FEATURES,
+        "n_clusters": N_CLUSTERS,
+        "pca": pca,
+        "bullish_clusters": sorted(bullish),
+    }
+    joblib.dump(bundle, MODELS_DIR / "unsupervised_bundle.pkl")
     joblib.dump(FEATURES, MODELS_DIR / "feature_columns.pkl")
 
-    baseline_precision = precision_score(y_test, baseline_pred, zero_division=0)
-    baseline_recall = recall_score(y_test, baseline_pred, zero_division=0)
-    baseline_f1 = f1_score(y_test, baseline_pred, zero_division=0)
-    logreg_precision = precision_score(y_test, logreg_pred, zero_division=0)
-    logreg_recall = recall_score(y_test, logreg_pred, zero_division=0)
-    logreg_f1 = f1_score(y_test, logreg_pred, zero_division=0)
-    rf_precision = precision_score(y_test, rf_pred, zero_division=0)
-    rf_recall = recall_score(y_test, rf_pred, zero_division=0)
-    rf_f1 = f1_score(y_test, rf_pred, zero_division=0)
-    linreg_precision = precision_score(y_test, linreg_pred_direction, zero_division=0)
-    linreg_recall = recall_score(y_test, linreg_pred_direction, zero_division=0)
-    linreg_f1 = f1_score(y_test, linreg_pred_direction, zero_division=0)
-
-    eval_table = pd.DataFrame(
-        [
-            {
-                "model": "baseline_always_down",
-                "accuracy": baseline_acc,
-                "precision_up_class": baseline_precision,
-                "recall_up_class": baseline_recall,
-                "f1_up_class": baseline_f1,
-            },
-            {
-                "model": "logistic_regression",
-                "accuracy": logreg_acc,
-                "precision_up_class": logreg_precision,
-                "recall_up_class": logreg_recall,
-                "f1_up_class": logreg_f1,
-            },
-            {
-                "model": "random_forest",
-                "accuracy": rf_acc,
-                "precision_up_class": rf_precision,
-                "recall_up_class": rf_recall,
-                "f1_up_class": rf_f1,
-            },
-            {
-                "model": "linear_regression",
-                "accuracy": linreg_acc,
-                "precision_up_class": linreg_precision,
-                "recall_up_class": linreg_recall,
-                "f1_up_class": linreg_f1,
-            },
-        ]
+    cluster_train_means = (
+        train.groupby("cluster", observed=True)["future_return_1d"].mean().to_dict()
     )
-    eval_table.to_csv(OUTPUTS_DIR / "model_scores_python.csv", index=False)
+    cluster_train_counts = train["cluster"].value_counts().sort_index().to_dict()
+    cluster_train_counts = {int(k): int(v) for k, v in cluster_train_counts.items()}
+
+    metrics_rows = [
+        {"metric": "silhouette_train", "value": silhouette_train},
+        {"metric": "silhouette_test", "value": silhouette_test},
+        {"metric": "inertia_train", "value": inertia},
+        {"metric": "n_clusters", "value": float(N_CLUSTERS)},
+    ]
+    pd.DataFrame(metrics_rows).to_csv(OUTPUTS_DIR / "unsupervised_metrics_python.csv", index=False)
 
     test_out = test.copy()
-    test_out["pred_logreg"] = logreg_pred
-    test_out["pred_rf"] = rf_pred
-    test_out["pred_linreg"] = linreg_pred_direction
-    test_out.to_csv(OUTPUTS_DIR / "test_predictions_python.csv", index=False)
+    test_out.to_csv(OUTPUTS_DIR / "test_clusters_python.csv", index=False)
 
     summary = {
-        "best_model": best_name,
-        "scores": {
-            "baseline": baseline_acc,
-            "logistic_regression": logreg_acc,
-            "random_forest": rf_acc,
-        },
-        "classification_report_best": classification_report(
-            y_test,
-            rf_pred if best_name == "random_forest" else logreg_pred,
-            output_dict=True,
-        ),
+        "method": "kmeans_unsupervised",
+        "n_clusters": N_CLUSTERS,
+        "silhouette_train": silhouette_train,
+        "silhouette_test": silhouette_test,
+        "inertia": inertia,
+        "bullish_clusters": sorted(bullish),
+        "cluster_train_mean_future_return_1d": {str(k): float(v) for k, v in cluster_train_means.items()},
+        "cluster_train_counts": {str(k): v for k, v in cluster_train_counts.items()},
+        "explained_variance_ratio_pca": [float(x) for x in pca.explained_variance_ratio_.tolist()],
     }
     with open(OUTPUTS_DIR / "model_summary_python.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"Training complete. Best model: {best_name}")
+    print(
+        f"Unsupervised training complete (KMeans k={N_CLUSTERS}). "
+        f"Silhouette (train/test): {silhouette_train:.4f} / {silhouette_test:.4f}. "
+        f"Bullish clusters (train mean return > 0): {sorted(bullish)}"
+    )
 
 
 if __name__ == "__main__":

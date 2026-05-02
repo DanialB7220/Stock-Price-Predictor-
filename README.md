@@ -1,8 +1,8 @@
 # Stock-Price-Predictor-
 
-End-to-end stock trend prediction project in both Python and R, including:
+End-to-end stock analysis project in both Python and R, including:
 - data pipeline based on local dataset `data/stock data.csv`,
-- baseline and advanced ML models,
+- **Python:** unsupervised K-Means regimes on technical features (scaler + clustering); **R:** supervised classifiers,
 - dashboards (Dash and Shiny),
 - Flask API with `.env` configuration.
 
@@ -61,8 +61,8 @@ python python/app_api.py
 ```
 
 ### Endpoints
-- `GET /health`
-- `POST /predict`
+- `GET /health` — includes `unsupervised_bundle_loaded`
+- `POST /predict` — assigns a feature row to a **K-Means cluster** (regime); returns distances and a `signal_long` flag derived from train-split cluster profitability (not a supervised classifier).
 
 Example `/predict` body:
 
@@ -78,3 +78,18 @@ Example `/predict` body:
   }
 }
 ```
+
+Example response:
+
+```json
+{
+  "cluster": 1,
+  "distance_to_own_centroid": 0.82,
+  "distances_to_all_centroids": [1.2, 0.82, 2.1],
+  "bullish_clusters": [1, 2],
+  "signal_long": true,
+  "pca_2d": [-0.1, 0.4]
+}
+```
+
+Artifacts: `models/unsupervised_bundle.pkl`, metrics in `outputs/unsupervised_metrics_python.csv`, test-period labels in `outputs/test_clusters_python.csv`.
